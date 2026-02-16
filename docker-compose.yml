@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    env_file:
+      - ./frontend/.env
+    environment:
+      - DATABASE_URL=postgresql://lucid_user:lucid_password@db:5432/lucid_db
+      - NEXT_PUBLIC_API_URL=http://backend:8000
+    depends_on:
+      - backend
+      - db
+
+  backend:
+    build: ./ai_engine
+    ports:
+      - "8000:8000"
+      - "8001:8001"
+    volumes:
+      - ./ai_engine:/app
+      - /var/run/docker.sock:/var/run/docker.sock
+      - lucid_workspaces:/tmp/lucid_workspace
+    environment:
+      - SESSION_SECRET=6977c6e899b6846aee73922de6ac653ddf41e5074cb904816eb2d3c5f5cd9325
+      - PORT=8000
+      - AGENT_SERVER_PORT=8001
+      - LLM_MODEL=${LLM_MODEL:-anthropic/claude-3-5-sonnet-20241022}
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_BASE_URL=${LLM_BASE_URL}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - DEFAULT_MODEL_PROVIDER=${DEFAULT_MODEL_PROVIDER:-anthropic}
+      - MAX_ITERATIONS=50
+      - SANDBOX_IMAGE=nikolaik/python-nodejs:python3.11-nodejs20
+
+  db:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: lucid_user
+      POSTGRES_PASSWORD: lucid_password
+      POSTGRES_DB: lucid_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
+  lucid_workspaces:

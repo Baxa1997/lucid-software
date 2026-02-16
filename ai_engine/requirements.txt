@@ -1,0 +1,31 @@
+# ─────────────────────────────────────────────────────────
+#  Lucid AI — Agent Engine Dependencies
+#  OpenHands Software Agent SDK V1
+# ─────────────────────────────────────────────────────────
+
+# Core Server
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.7.0
+websockets>=12.0
+python-multipart>=0.0.6
+
+# Authentication
+python-jose[cryptography]>=3.3.0
+
+# OpenHands Software Agent SDK (V1 — 4-package architecture)
+openhands-sdk>=1.0.0             # Core: LLM, Agent, Conversation, Tool
+openhands-tools>=1.0.0           # Built-in tools: TerminalTool, FileEditorTool
+openhands-workspace>=1.0.0       # DockerWorkspace / RemoteWorkspace backends
+openhands-agent-server>=1.0.0    # Remote agent server for sandboxed execution
+
+# LLM Providers
+google-generativeai>=0.8.0        # Google Gemini official SDK
+litellm>=1.50.0                   # Model routing (Anthropic, OpenAI, Gemini, etc.)
+
+# Docker (for Docker host management)
+docker>=7.1.0
+
+# Utilities
+python-dotenv>=1.0.0
+httpx>=0.27.0
