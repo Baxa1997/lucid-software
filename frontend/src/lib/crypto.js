@@ -1,31 +1,48 @@
 // ─────────────────────────────────────────────────────────
-//  u-code — Encryption Utils
-//  AES-256-CBC with per-message IV
+//  Lucid AI — Encryption Utils
+//  AES-256-CTR with per-message IV (stream cipher mode)
+//
+//  CTR mode is preferred over CBC here because:
+//    • No padding oracle attacks (stream cipher)
+//    • Parallelisable encryption/decryption
+//    • No need for PKCS7 padding
+//
+//  Env:  ENCRYPTION_KEY  (32-byte hex or any string, hashed to 32 bytes)
 // ─────────────────────────────────────────────────────────
 
 import crypto from 'crypto';
 
-const ALGORITHM = 'aes-256-cbc';
+const ALGORITHM = 'aes-256-ctr';
+const IV_LENGTH = 16; // 128-bit IV for AES-CTR
 
-// Helper: Ensure the secret is exactly 32 bytes (256 bits)
+// ── Internal: Derive a 32-byte key from ENCRYPTION_KEY env var ──
 function getSecretKey() {
   const secret = process.env.ENCRYPTION_KEY;
   if (!secret) {
-    throw new Error('Missing ENCRYPTION_KEY environment variable');
+    throw new Error(
+      'Missing ENCRYPTION_KEY environment variable. ' +
+      'Generate one with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"'
+    );
   }
-  // Hash the secret to ensure it's always 32 bytes
+  // Hash the secret to ensure it's always exactly 32 bytes (256 bits)
   return crypto.createHash('sha256').update(String(secret)).digest();
 }
 
 /**
  * Encrypt a plaintext string.
- * Returns { encrypted: hex, iv: hex }
  *
- * @param {string} text
- * @returns {{ encrypted: string, iv: string }}
+ * @param   {string} text  — The plaintext to encrypt
+ * @returns {{ iv: string, content: string }}
+ *          iv      — hex-encoded initialization vector (16 bytes)
+ *          content — hex-encoded encrypted ciphertext
+ *
+ * @example
+ *   const hash = encrypt('ghp_abc123...');
+ *   // → { iv: 'a1b2c3...', content: 'd4e5f6...' }
+ *   // Store hash.content as `encryptedToken`, hash.iv as `iv`
  */
 export function encrypt(text) {
-  const iv = crypto.randomBytes(16);
+  const iv = crypto.randomBytes(IV_LENGTH);
   const key = getSecretKey();
   const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
 
@@ -33,26 +50,42 @@ export function encrypt(text) {
   encrypted += cipher.final('hex');
 
   return {
-    encrypted,
     iv: iv.toString('hex'),
+    content: encrypted,
   };
 }
 
 /**
- * Decrypt a hex string using the stored IV.
- * Returns the original plaintext.
+ * Decrypt data that was encrypted with `encrypt()`.
  *
- * @param {string} encryptedHex
- * @param {string} ivHex
- * @returns {string}
+ * @param   {{ iv: string, content: string }} hash
+ *          iv      — hex-encoded initialization vector
+ *          content — hex-encoded ciphertext
+ * @returns {string} — The original plaintext
+ *
+ * @example
+ *   const token = decrypt({ iv: 'a1b2c3...', content: 'd4e5f6...' });
+ *   // → 'ghp_abc123...'
  */
-export function decrypt(encryptedHex, ivHex) {
-  const iv = Buffer.from(ivHex, 'hex');
+export function decrypt(hash) {
+  const iv = Buffer.from(hash.iv, 'hex');
   const key = getSecretKey();
   const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
 
-  let decrypted = decipher.update(encryptedHex, 'hex', 'utf8');
+  let decrypted = decipher.update(hash.content, 'hex', 'utf8');
   decrypted += decipher.final('utf8');
 
   return decrypted;
+}
+
+/**
+ * Convenience: Decrypt from the DB column format.
+ * Prisma stores `encryptedToken` and `iv` as separate columns.
+ *
+ * @param   {string} encryptedToken — hex ciphertext from DB
+ * @param   {string} iv             — hex IV from DB
+ * @returns {string} — The original plaintext token
+ */
+export function decryptFromDB(encryptedToken, iv) {
+  return decrypt({ iv, content: encryptedToken });
 }

@@ -6,8 +6,8 @@ WORKDIR /app
 # Copy package files and npm config
 COPY package.json package-lock.json .npmrc ./
 
-# Install compatibility libraries for Alpine
-RUN apk add --no-cache libc6-compat
+# Install compatibility libraries for Alpine (including OpenSSL for Prisma)
+RUN apk add --no-cache libc6-compat openssl
 
 # Install dependencies using npm (legacy-peer-deps is set in .npmrc)
 RUN npm install --legacy-peer-deps
@@ -17,6 +17,9 @@ RUN npm install --save-dev typescript @types/react @types/node --legacy-peer-dep
 
 # Copy the rest of the frontend code
 COPY . .
+
+# Generate Prisma Client for this platform (linux-musl)
+RUN npx prisma generate
 
 EXPOSE 3000
 

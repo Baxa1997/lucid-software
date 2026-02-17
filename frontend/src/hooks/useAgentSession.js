@@ -5,14 +5,27 @@
 //  WebSocket connection to Python AI Engine (ws://…/ws)
 //
 //  Input:  { projectId, token }
-//  Output: { messages, files, status, terminalLogs,
-//            startSession, sendMessage, stopSession }
+//  Output: { messages, files, fileTree, activeFile, status,
+//            terminalLogs, startSession, sendMessage,
+//            stopSession, selectFile }
 // ─────────────────────────────────────────────────────────
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 
 const WS_BASE = process.env.NEXT_PUBLIC_AGENT_WS_URL || 'ws://localhost:8000/ws';
 const HEARTBEAT_INTERVAL_MS = 25_000; // 25s keep-alive ping
+
+// Derive the HTTP API base URL from the WebSocket URL
+// ws://host:port/ws → http://host:port
+const API_BASE = (() => {
+  try {
+    const url = new URL(WS_BASE);
+    const protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
+    return `${protocol}//${url.host}`;
+  } catch {
+    return 'http://localhost:8000';
+  }
+})();
 
 /**
  * useAgentSession — manages the full lifecycle of an AI agent session.
@@ -37,6 +50,8 @@ export function useAgentSession({ projectId, token = '' }) {
   const [messages, setMessages] = useState([]);
   const [terminalLogs, setTerminalLogs] = useState([]);
   const [files, setFiles] = useState([]);
+  const [fileTree, setFileTree] = useState([]);
+  const [activeFile, setActiveFile] = useState(null); // { path, content }
   const [error, setError] = useState(null);
 
   // ── Refs ─────────────────────────────────────────────────
@@ -44,6 +59,7 @@ export function useAgentSession({ projectId, token = '' }) {
   const heartbeatRef = useRef(null);
   const reconnectCount = useRef(0);
   const idCounter = useRef(0);
+  const sessionIdRef = useRef(null);
 
   const MAX_RECONNECTS = 3;
 
@@ -114,7 +130,16 @@ export function useAgentSession({ projectId, token = '' }) {
           break;
         }
 
-        // ─── File-tree change ─────────────────────────
+        // ─── File-tree update (auto-synced from backend) ─
+        case 'file_tree': {
+          if (Array.isArray(msg.tree)) {
+            setFileTree(msg.tree);
+            pushLog(`📁 File tree updated (${_countFiles(msg.tree)} items)`);
+          }
+          break;
+        }
+
+        // ─── File-tree change (legacy flat list) ──────
         case 'file_change': {
           // msg.files = ["src/main.py", …] or msg.path = "src/main.py"
           if (Array.isArray(msg.files)) {
@@ -159,6 +184,9 @@ export function useAgentSession({ projectId, token = '' }) {
         // ─── Status updates ───────────────────────────
         case 'status': {
           pushLog(`[${msg.status}] ${msg.message || ''}`);
+          if (msg.sessionId) {
+            sessionIdRef.current = msg.sessionId;
+          }
           if (msg.status === 'ready' || msg.status === 'mock_mode') {
             setStatus('connected');
             pushMessage('system', msg.message || 'Agent is ready.');
@@ -336,6 +364,50 @@ export function useAgentSession({ projectId, token = '' }) {
   );
 
   /**
+   * selectFile — fetch file content from the Python backend and
+   * set it as the active file for the Monaco editor.
+   */
+  const selectFile = useCallback(
+    async (path) => {
+      if (!path) return;
+
+      // Optimistic: show the file path immediately
+      setActiveFile((prev) => ({
+        path,
+        content: prev?.path === path ? prev.content : '',
+        loading: true,
+      }));
+
+      try {
+        // Determine session ID from the WebSocket handshake
+        // (The backend needs it to locate the workspace)
+        const sessionId = sessionIdRef.current;
+
+        const url = new URL(`${API_BASE}/api/files/read`);
+        url.searchParams.set('session_id', sessionId || '');
+        url.searchParams.set('path', path);
+
+        const res = await fetch(url.toString());
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || `HTTP ${res.status}`);
+        }
+
+        const data = await res.json();
+        setActiveFile({ path, content: data.content || '', loading: false });
+      } catch (err) {
+        pushLog(`⚠️ Failed to read ${path}: ${err.message}`);
+        setActiveFile((prev) =>
+          prev?.path === path
+            ? { ...prev, content: `// Error loading file: ${err.message}`, loading: false }
+            : prev
+        );
+      }
+    },
+    [pushLog]
+  );
+
+  /**
    * stopSession — gracefully close the WebSocket.
    */
   const stopSession = useCallback(() => {
@@ -364,6 +436,8 @@ export function useAgentSession({ projectId, token = '' }) {
     // State
     messages,
     files,
+    fileTree,
+    activeFile,
     status,
     terminalLogs,
     error,
@@ -372,5 +446,20 @@ export function useAgentSession({ projectId, token = '' }) {
     startSession,
     sendMessage,
     stopSession,
+    selectFile,
   };
+}
+
+// ── Helpers (module-level) ─────────────────────────────────
+
+/** Count total items in a nested tree. */
+function _countFiles(tree) {
+  let count = 0;
+  for (const node of tree) {
+    count += 1;
+    if (node.children?.length) {
+      count += _countFiles(node.children);
+    }
+  }
+  return count;
 }

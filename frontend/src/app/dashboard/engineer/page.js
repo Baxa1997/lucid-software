@@ -1,75 +1,377 @@
 'use client';
 
-import { 
-  GitBranch, Plus, ChevronDown, Check, 
-  Github, Rocket, Clock, Sparkles, MessageSquare, 
+// ─────────────────────────────────────────────────────────
+//  Lucid AI — Engineer Dashboard
+//  Real integration-powered repo picker
+//
+//  Flow:
+//    1. Fetch integrations  →  Integration dropdown
+//    2. Select integration  →  Fetch repos from /api/integrations/{id}/repos
+//    3. Select repo         →  Auto-fill name, fetch branches
+//    4. Select branch       →  Ready to create
+//    5. "Create Project"    →  POST /api/projects
+// ─────────────────────────────────────────────────────────
+
+import {
+  GitBranch, Plus, ChevronDown, Check,
+  Github, Rocket, Clock, Sparkles,
   ArrowRight, Folder, Search, X, Moon,
-  CircleDot
+  Lock, Plug, Loader2, AlertCircle,
+  Globe, CircleDot,
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { cn } from '@/lib/utils';
 import useFlowStore from '@/store/useFlowStore';
 
+// ── Provider icons ────────────────────────────────────────
+function ProviderIcon({ provider, className }) {
+  if (provider === 'GITLAB') {
+    return <GitBranch className={cn("w-4 h-4 text-orange-500", className)} />;
+  }
+  return <Github className={cn("w-4 h-4 text-slate-700", className)} />;
+}
+
+// ── Searchable Combobox Dropdown ──────────────────────────
+function ComboboxDropdown({
+  items = [],
+  value,
+  onChange,
+  renderItem,
+  placeholder = 'Select...',
+  searchPlaceholder = 'Search...',
+  loading = false,
+  emptyText = 'No items found',
+  disabled = false,
+  icon: Icon = Folder,
+  renderSelected,
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const ref = useRef(null);
+
+  const filtered = useMemo(() => {
+    if (!search.trim()) return items;
+    const q = search.toLowerCase();
+    return items.filter((item) => {
+      const label = item.name || item.full_name || item.label || '';
+      return label.toLowerCase().includes(q);
+    });
+  }, [items, search]);
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        onClick={() => !disabled && setOpen(!open)}
+        disabled={disabled}
+        className={cn(
+          "w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl border text-sm transition-all",
+          disabled
+            ? "bg-slate-50 border-slate-100 text-slate-300 cursor-not-allowed"
+            : open
+              ? "border-blue-300 ring-2 ring-blue-100 bg-white"
+              : "bg-slate-50 border-slate-200 hover:border-slate-300 text-slate-600"
+        )}
+      >
+        <div className="flex items-center gap-2.5 truncate min-w-0">
+          {renderSelected ? (
+            renderSelected(value)
+          ) : value ? (
+            <>
+              <Icon className="w-4 h-4 text-slate-500 shrink-0" />
+              <span className="font-medium text-slate-700 truncate">
+                {value.name || value.full_name || value.label || 'Selected'}
+              </span>
+            </>
+          ) : (
+            <>
+              <Icon className="w-4 h-4 text-slate-300 shrink-0" />
+              <span className="text-slate-400">{placeholder}</span>
+            </>
+          )}
+        </div>
+        {loading ? (
+          <Loader2 className="w-4 h-4 text-blue-500 shrink-0 animate-spin" />
+        ) : (
+          <ChevronDown className={cn(
+            "w-4 h-4 text-slate-400 shrink-0 transition-transform",
+            open && "rotate-180"
+          )} />
+        )}
+      </button>
+
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => { setOpen(false); setSearch(''); }} />
+          <div
+            className="absolute top-full left-0 right-0 mt-1.5 bg-white rounded-xl border border-slate-200 overflow-hidden z-50 shadow-xl"
+            style={{ backgroundColor: '#ffffff' }}
+          >
+            {/* Search */}
+            {items.length > 5 && (
+              <div className="px-3 py-2 border-b border-slate-100">
+                <div className="relative">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+                  <input
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    className="w-full pl-8 pr-3 py-1.5 text-xs border border-slate-100 rounded-lg bg-slate-50 outline-none focus:border-blue-300 text-slate-700"
+                    placeholder={searchPlaceholder}
+                    autoFocus
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* List */}
+            <div className="max-h-56 overflow-y-auto">
+              {loading ? (
+                <div className="px-4 py-8 text-center">
+                  <Loader2 className="w-5 h-5 text-blue-500 mx-auto mb-2 animate-spin" />
+                  <p className="text-xs text-slate-400">Loading…</p>
+                </div>
+              ) : filtered.length === 0 ? (
+                <div className="px-4 py-6 text-center">
+                  <p className="text-sm text-slate-400">{emptyText}</p>
+                </div>
+              ) : (
+                filtered.map((item, idx) => (
+                  <button
+                    key={item.id ?? item.name ?? idx}
+                    type="button"
+                    onClick={() => {
+                      onChange(item);
+                      setOpen(false);
+                      setSearch('');
+                    }}
+                    className={cn(
+                      "w-full flex items-center gap-3 px-3.5 py-2.5 text-sm transition-all text-left hover:bg-slate-50",
+                      value?.id === item.id ? "bg-blue-50 text-blue-700" : "text-slate-600"
+                    )}
+                  >
+                    {renderItem ? renderItem(item, value?.id === item.id) : (
+                      <>
+                        <span className="font-medium truncate">{item.name || item.label}</span>
+                        {value?.id === item.id && <Check className="w-3.5 h-3.5 ml-auto text-blue-600 shrink-0" />}
+                      </>
+                    )}
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+
+// ── Main Page Component ──────────────────────────────────
 export default function EngineerDashboardPage() {
   const router = useRouter();
-  const {
-    selectedRepo, setSelectedRepo,
-    sourceBranch, setSourceBranch,
-    setSessionActive,
-    mockRepos,
-  } = useFlowStore();
+  const { setSelectedRepo, setSourceBranch, setSessionActive } = useFlowStore();
 
-  const [showRepoDropdown, setShowRepoDropdown] = useState(false);
-  const [showBranchDropdown, setShowBranchDropdown] = useState(false);
-  const [showProviderDropdown, setShowProviderDropdown] = useState(false);
-  const [repoSearch, setRepoSearch] = useState('');
-  const [localRepo, setLocalRepo] = useState(null);
-  const [localBranch, setLocalBranch] = useState('');
-  const [selectedProvider, setSelectedProvider] = useState('github');
-  const [isLaunching, setIsLaunching] = useState(false);
-  const [showBanner, setShowBanner] = useState(true);
+  // ── Integration State ────────────────────────────────
+  const [integrations, setIntegrations] = useState([]);
+  const [integrationsLoading, setIntegrationsLoading] = useState(true);
+  const [selectedIntegration, setSelectedIntegration] = useState(null);
+
+  // ── Repository State ─────────────────────────────────
+  const [repos, setRepos] = useState([]);
+  const [reposLoading, setReposLoading] = useState(false);
+  const [selectedRepo2, setSelectedRepo2] = useState(null);
+
+  // ── Branch State ─────────────────────────────────────
+  const [branches, setBranches] = useState([]);
+  const [branchesLoading, setBranchesLoading] = useState(false);
+  const [selectedBranch, setSelectedBranch] = useState(null);
+
+  // ── Project Name ─────────────────────────────────────
+  const [projectName, setProjectName] = useState('');
+
+  // ── Model Selector ───────────────────────────────────
   const [selectedModel, setSelectedModel] = useState('anthropic');
   const [showModelDropdown, setShowModelDropdown] = useState(false);
 
-  const branches = ['main', 'develop', 'staging', 'release/v2.0', 'feature/auth'];
-  
-  const allRepos = [
-    ...mockRepos.github.map(r => ({ ...r, provider: 'github' })),
-    ...mockRepos.demo.map(r => ({ ...r, provider: 'demo' })),
-  ];
+  // ── UI State ─────────────────────────────────────────
+  const [isCreating, setIsCreating] = useState(false);
+  const [showBanner, setShowBanner] = useState(true);
+  const [error, setError] = useState(null);
 
-  const filteredRepos = allRepos.filter(r => 
-    r.name.toLowerCase().includes(repoSearch.toLowerCase())
-  );
+  // ════════════════════════════════════════════════════
+  //  Step 1: Fetch Integrations on Mount
+  // ════════════════════════════════════════════════════
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setIntegrationsLoading(true);
+      try {
+        const res = await fetch('/api/integrations');
+        if (!res.ok) throw new Error('Failed to load integrations');
+        const data = await res.json();
+        if (!cancelled) {
+          setIntegrations(data.integrations || []);
+        }
+      } catch (err) {
+        console.error('Failed to fetch integrations:', err);
+      } finally {
+        if (!cancelled) setIntegrationsLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
+  // ════════════════════════════════════════════════════
+  //  Step 2: Fetch Repos When Integration Selected
+  // ════════════════════════════════════════════════════
+  const handleIntegrationSelect = useCallback(async (integration) => {
+    setSelectedIntegration(integration);
+    setSelectedRepo2(null);
+    setBranches([]);
+    setSelectedBranch(null);
+    setProjectName('');
+    setError(null);
 
-  const handleLaunch = () => {
-    if (!localRepo) return;
-    setIsLaunching(true);
-    setSelectedRepo(localRepo);
-    setSourceBranch(localBranch || 'main');
-    setSessionActive(true);
-    // Store model config for the workspace page to use
-    if (typeof window !== 'undefined') {
-      sessionStorage.setItem('lucid_model_provider', selectedModel);
-      sessionStorage.removeItem('lucid_custom_api_key');
+    setReposLoading(true);
+    try {
+      const res = await fetch(`/api/integrations/${integration.id}/repos`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      setRepos(data.repos || []);
+    } catch (err) {
+      console.error('Failed to fetch repos:', err);
+      setError(`Failed to load repositories: ${err.message}`);
+      setRepos([]);
+    } finally {
+      setReposLoading(false);
     }
-    setTimeout(() => {
-      router.push(`/dashboard/engineer/workspace/${encodeURIComponent(localRepo.name)}`);
-    }, 1000);
-  };
+  }, []);
 
+  // ════════════════════════════════════════════════════
+  //  Step 3: Fetch Branches When Repo Selected
+  // ════════════════════════════════════════════════════
+  const handleRepoSelect = useCallback(async (repo) => {
+    setSelectedRepo2(repo);
+    setError(null);
+
+    // Auto-fill project name from repo name
+    const name = repo.name || repo.full_name?.split('/').pop() || '';
+    setProjectName(name);
+
+    // Pre-select default branch
+    const defaultBr = repo.default_branch || 'main';
+
+    setBranchesLoading(true);
+    try {
+      // Build the query param based on provider
+      const provider = selectedIntegration?.provider;
+      let url = `/api/integrations/${selectedIntegration.id}/branches`;
+
+      if (provider === 'GITHUB') {
+        // GitHub uses owner/repo format
+        const fullName = repo.full_name || repo.name;
+        url += `?repo=${encodeURIComponent(fullName)}`;
+      } else if (provider === 'GITLAB') {
+        // GitLab uses numeric project ID
+        url += `?projectId=${encodeURIComponent(repo.id)}`;
+      }
+
+      const res = await fetch(url);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      const branchList = data.branches || [];
+      setBranches(branchList);
+
+      // Pre-select default branch
+      const defaultMatch = branchList.find(b => b.name === defaultBr);
+      setSelectedBranch(defaultMatch || branchList[0] || { name: defaultBr });
+
+    } catch (err) {
+      console.error('Failed to fetch branches:', err);
+      // Fallback: show only the default branch
+      setBranches([{ name: defaultBr, protected: false }]);
+      setSelectedBranch({ name: defaultBr });
+    } finally {
+      setBranchesLoading(false);
+    }
+  }, [selectedIntegration]);
+
+  // ════════════════════════════════════════════════════
+  //  Step 4: Create Project & Launch Workspace
+  // ════════════════════════════════════════════════════
+  const handleCreateProject = useCallback(async () => {
+    if (!selectedRepo2 || !projectName.trim()) return;
+
+    setIsCreating(true);
+    setError(null);
+
+    try {
+      const res = await fetch('/api/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: projectName.trim(),
+          repoUrl: selectedRepo2.html_url || selectedRepo2.clone_url || '',
+          integrationId: selectedIntegration?.id || null,
+          branch: selectedBranch?.name || 'main',
+          provider: selectedIntegration?.provider || null,
+        }),
+      });
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      const project = data.project;
+
+      // Update flow store for workspace
+      setSelectedRepo({ name: project.name, url: project.repoUrl });
+      setSourceBranch(project.branch);
+      setSessionActive(true);
+
+      // Store model config
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem('lucid_model_provider', selectedModel);
+        sessionStorage.removeItem('lucid_custom_api_key');
+      }
+
+      // Navigate to workspace
+      router.push(`/dashboard/engineer/workspace/${encodeURIComponent(project.name)}`);
+
+    } catch (err) {
+      console.error('Failed to create project:', err);
+      setError(err.message);
+    } finally {
+      setIsCreating(false);
+    }
+  }, [selectedRepo2, projectName, selectedIntegration, selectedBranch, selectedModel, setSelectedRepo, setSourceBranch, setSessionActive, router]);
+
+  // ── Scratch Session ──────────────────────────────────
   const handleNewConversation = () => {
     setSessionActive(true);
     setSelectedRepo({ name: 'scratch-session', lang: '', updated: 'Now', stars: 0 });
     router.push('/dashboard/engineer/workspace/scratch-session');
   };
 
+  // ── Computed State ───────────────────────────────────
+  const canCreate = selectedRepo2 && projectName.trim() && selectedBranch && !isCreating;
+  const hasIntegrations = integrations.length > 0;
+
+  // ═══════════════════════════════════════════════════════
+  //  Render
+  // ═══════════════════════════════════════════════════════
   return (
     <div className="h-full bg-[#f0f4f9] relative flex flex-col">
-
-      {/* ── Main Content ── */}
       <div className="max-w-3xl mx-auto px-8 py-8 flex-1 flex flex-col justify-center w-full">
 
         {/* Banner */}
@@ -84,25 +386,39 @@ export default function EngineerDashboardPage() {
             </button>
           </div>
         )}
-        
+
         {/* Title */}
         <div className="text-center mb-2">
           <h1 className="text-4xl sm:text-[44px] font-extrabold text-slate-900 tracking-tight leading-tight">
             Let&apos;s Start Building!
           </h1>
         </div>
-
-        {/* Subtitle */}
         <div className="text-center mb-10">
           <p className="text-[15px] text-slate-400 max-w-xl mx-auto leading-relaxed">
             Select a repository to begin an autonomous engineering session or start a fresh environment from scratch.
           </p>
         </div>
 
+        {/* Error Banner */}
+        {error && (
+          <div className="mb-5 flex items-start gap-3 px-4 py-3 bg-red-50 border border-red-200 rounded-xl animate-fade-in">
+            <AlertCircle className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-bold text-red-700">Error</p>
+              <p className="text-xs text-red-600 mt-0.5">{error}</p>
+            </div>
+            <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600 shrink-0">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
         {/* ── Two Cards ── */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mb-14 relative z-30">
-          
-          {/* LEFT: Open Repository */}
+
+          {/* ════════════════════════════════════════════
+              LEFT: Open Repository (Real Data)
+          ════════════════════════════════════════════ */}
           <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-soft relative z-30">
             <div className="flex items-center gap-3 mb-1">
               <div className="w-8 h-8 rounded-lg bg-blue-50 border border-blue-100 flex items-center justify-center">
@@ -110,144 +426,203 @@ export default function EngineerDashboardPage() {
               </div>
               <h2 className="text-[15px] font-bold text-slate-900">Open Repository</h2>
             </div>
-            
-            {/* Select URL label */}
-            <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mt-4 mb-3">Select or insert a URL</p>
 
+            {/* ── 1. Integration Selector ─────────────── */}
+            <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mt-4 mb-2">
+              Source
+            </p>
             <div className="space-y-2.5 mb-4">
-              {/* Provider Dropdown */}
-              <div className="relative">
-                <button
-                  onClick={() => { setShowProviderDropdown(!showProviderDropdown); setShowRepoDropdown(false); setShowBranchDropdown(false); }}
-                  className="w-full flex items-center justify-between px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-600 hover:border-slate-300 transition-all"
-                >
-                  <div className="flex items-center gap-2.5">
-                    <Github className="w-4 h-4 text-slate-700" />
-                    <span className="font-medium">{selectedProvider === 'github' ? 'GitHub' : 'GitLab'}</span>
-                  </div>
-                  <ChevronDown className={cn("w-4 h-4 text-slate-400 transition-transform", showProviderDropdown && "rotate-180")} />
-                </button>
-
-                {showProviderDropdown && (
-                  <>
-                    <div className="fixed inset-0 z-40" onClick={() => setShowProviderDropdown(false)} />
-                    <div className="absolute right-0 top-full mt-1.5 w-full bg-white rounded-xl border border-slate-200 overflow-hidden z-50 shadow-lg" style={{ backgroundColor: '#ffffff', zIndex: 50 }}>
-                      <button
-                        onClick={() => { setSelectedProvider('github'); setShowProviderDropdown(false); }}
-                        className={cn("w-full flex items-center gap-2.5 px-3.5 py-2.5 text-sm text-left hover:bg-slate-50 transition-colors", selectedProvider === 'github' && "bg-blue-50 text-blue-600")}
-                      >
-                        <Github className="w-4 h-4" /> GitHub
-                        {selectedProvider === 'github' && <Check className="w-3.5 h-3.5 ml-auto" />}
-                      </button>
-                      <button
-                        onClick={() => { setSelectedProvider('gitlab'); setShowProviderDropdown(false); }}
-                        className={cn("w-full flex items-center gap-2.5 px-3.5 py-2.5 text-sm text-left hover:bg-slate-50 transition-colors", selectedProvider === 'gitlab' && "bg-blue-50 text-blue-600")}
-                      >
-                        <GitBranch className="w-4 h-4" /> GitLab
-                        {selectedProvider === 'gitlab' && <Check className="w-3.5 h-3.5 ml-auto" />}
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-
-              {/* Repository Dropdown */}
-              <div className="relative">
-                <button
-                  onClick={() => { setShowRepoDropdown(!showRepoDropdown); setShowBranchDropdown(false); setShowProviderDropdown(false); }}
-                  className="w-full flex items-center justify-between px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-600 hover:border-blue-300 transition-all"
-                >
+              <ComboboxDropdown
+                items={integrations}
+                value={selectedIntegration}
+                onChange={handleIntegrationSelect}
+                placeholder="Select source…"
+                searchPlaceholder="Search integrations…"
+                loading={integrationsLoading}
+                emptyText={
+                  integrationsLoading
+                    ? 'Loading…'
+                    : 'No integrations connected'
+                }
+                icon={Plug}
+                renderSelected={(val) => val ? (
                   <div className="flex items-center gap-2.5 truncate">
-                    <Folder className="w-4 h-4 text-slate-400 shrink-0" />
-                    <span className={cn("truncate", localRepo ? "text-slate-700 font-medium" : "text-slate-400")}>
-                      {localRepo ? localRepo.name : 'user/repo'}
+                    <ProviderIcon provider={val.provider} />
+                    <span className="font-medium text-slate-700 truncate">
+                      {val.provider === 'GITHUB' ? 'GitHub' : 'GitLab'}
+                      {val.label ? ` (${val.label})` : ''}
                     </span>
                   </div>
-                  <ChevronDown className={cn("w-4 h-4 text-slate-400 shrink-0 transition-transform", showRepoDropdown && "rotate-180")} />
-                </button>
-
-                {showRepoDropdown && (
-                  <>
-                    <div className="fixed inset-0 z-40" onClick={() => setShowRepoDropdown(false)} />
-                    <div className="absolute top-full left-0 right-0 mt-1.5 bg-white rounded-xl border border-slate-200 overflow-hidden z-50 shadow-lg" style={{ backgroundColor: '#ffffff', zIndex: 50 }}>
-                      <div className="px-3 py-2 border-b border-slate-100">
-                        <div className="relative">
-                          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
-                          <input
-                            value={repoSearch}
-                            onChange={(e) => setRepoSearch(e.target.value)}
-                            className="w-full pl-8 pr-3 py-1.5 text-xs border border-slate-100 rounded-lg bg-slate-50 outline-none focus:border-blue-300 text-slate-700"
-                            placeholder="Search repositories..."
-                            autoFocus
-                          />
-                        </div>
-                      </div>
-                      <div className="max-h-48 overflow-y-auto">
-                        {filteredRepos.map((repo) => (
-                          <button
-                            key={repo.name}
-                            onClick={() => { setLocalRepo(repo); setShowRepoDropdown(false); setRepoSearch(''); }}
-                            className={cn(
-                              "w-full flex items-center gap-3 px-3.5 py-2.5 text-sm transition-all text-left hover:bg-slate-50",
-                              localRepo?.name === repo.name ? "bg-blue-50 text-blue-700" : "text-slate-600"
-                            )}
-                          >
-                            <Github className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                            <span className="font-medium truncate">{repo.name}</span>
-                            {localRepo?.name === repo.name && <Check className="w-3.5 h-3.5 ml-auto text-blue-600 shrink-0" />}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </>
-                )}
-              </div>
-
-              {/* Branch Selector */}
-              <div className="relative">
-                <button
-                  onClick={() => { setShowBranchDropdown(!showBranchDropdown); setShowRepoDropdown(false); setShowProviderDropdown(false); }}
-                  className="w-full flex items-center justify-between px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-600 hover:border-blue-300 transition-all"
-                >
+                ) : (
                   <div className="flex items-center gap-2.5">
-                    <GitBranch className="w-4 h-4 text-slate-400" />
-                    <span className={cn(localBranch ? "text-slate-700 font-medium" : "text-slate-400")}>{localBranch || 'Select branch...'}</span>
+                    <Plug className="w-4 h-4 text-slate-300 shrink-0" />
+                    <span className="text-slate-400">Select source…</span>
                   </div>
-                  <ChevronDown className={cn("w-4 h-4 text-slate-400 shrink-0 transition-transform", showBranchDropdown && "rotate-180")} />
-                </button>
-
-                {showBranchDropdown && (
+                )}
+                renderItem={(item, isSelected) => (
                   <>
-                    <div className="fixed inset-0 z-40" onClick={() => setShowBranchDropdown(false)} />
-                    <div className="absolute top-full left-0 right-0 mt-1.5 bg-white rounded-xl border border-slate-200 overflow-hidden z-50 shadow-lg" style={{ backgroundColor: '#ffffff', zIndex: 50 }}>
-                      {branches.map((branch) => (
-                        <button
-                          key={branch}
-                          onClick={() => { setLocalBranch(branch); setShowBranchDropdown(false); }}
-                          className={cn(
-                            "w-full flex items-center gap-3 px-3.5 py-2.5 text-sm transition-all text-left hover:bg-slate-50",
-                            localBranch === branch ? "bg-blue-50 text-blue-700" : "text-slate-600"
-                          )}
-                        >
-                          <GitBranch className="w-3.5 h-3.5 text-slate-400" />
-                          <span className="font-medium">{branch}</span>
-                          {localBranch === branch && <Check className="w-3.5 h-3.5 ml-auto text-blue-600" />}
-                        </button>
-                      ))}
+                    <ProviderIcon provider={item.provider} />
+                    <div className="flex-1 min-w-0">
+                      <p className={cn(
+                        "font-medium truncate",
+                        isSelected ? "text-blue-700" : "text-slate-700"
+                      )}>
+                        {item.provider === 'GITHUB' ? 'GitHub' : 'GitLab'}
+                        {item.label ? ` — ${item.label}` : ''}
+                      </p>
+                      {item.externalUsername && (
+                        <p className="text-[10px] text-slate-400 truncate">@{item.externalUsername}</p>
+                      )}
                     </div>
+                    {isSelected && <Check className="w-3.5 h-3.5 ml-auto text-blue-600 shrink-0" />}
                   </>
                 )}
-              </div>
+              />
+
+              {/* Connect new button */}
+              {!integrationsLoading && !hasIntegrations && (
+                <button
+                  onClick={() => router.push('/dashboard/engineer/integrations')}
+                  className="w-full flex items-center justify-center gap-2 px-3.5 py-2.5 bg-blue-50 border border-blue-200 rounded-xl text-xs font-semibold text-blue-700 hover:bg-blue-100 transition-all"
+                >
+                  <Plug className="w-3.5 h-3.5" />
+                  Connect GitHub or GitLab
+                  <ArrowRight className="w-3 h-3 opacity-50" />
+                </button>
+              )}
+
+              {/* ── 2. Repository Dropdown ──────────────── */}
+              {selectedIntegration && (
+                <>
+                  <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider pt-1">
+                    Repository
+                  </p>
+                  <ComboboxDropdown
+                    items={repos}
+                    value={selectedRepo2}
+                    onChange={handleRepoSelect}
+                    placeholder="Select a repository…"
+                    searchPlaceholder="Search repositories…"
+                    loading={reposLoading}
+                    emptyText="No repositories found"
+                    icon={Folder}
+                    renderSelected={(val) => val ? (
+                      <div className="flex items-center gap-2.5 truncate">
+                        <ProviderIcon provider={selectedIntegration.provider} />
+                        <span className="font-medium text-slate-700 truncate">
+                          {val.full_name || val.name}
+                        </span>
+                        {val.private && <Lock className="w-3 h-3 text-amber-500 shrink-0" />}
+                      </div>
+                    ) : null}
+                    renderItem={(item, isSelected) => (
+                      <>
+                        <ProviderIcon provider={selectedIntegration.provider} className="shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <p className={cn(
+                              "font-medium truncate",
+                              isSelected ? "text-blue-700" : "text-slate-700"
+                            )}>
+                              {item.full_name || item.name}
+                            </p>
+                            {item.private && (
+                              <Lock className="w-3 h-3 text-amber-500 shrink-0" />
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 mt-0.5">
+                            {item.language && (
+                              <span className="text-[10px] text-slate-400">
+                                <CircleDot className="w-2.5 h-2.5 inline mr-0.5" />
+                                {item.language}
+                              </span>
+                            )}
+                            {item.description && (
+                              <span className="text-[10px] text-slate-400 truncate">
+                                {item.description}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        {isSelected && <Check className="w-3.5 h-3.5 ml-auto text-blue-600 shrink-0" />}
+                      </>
+                    )}
+                  />
+                </>
+              )}
+
+              {/* ── 3. Branch Selector ─────────────────── */}
+              {selectedRepo2 && (
+                <>
+                  <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider pt-1">
+                    Branch
+                  </p>
+                  <ComboboxDropdown
+                    items={branches}
+                    value={selectedBranch}
+                    onChange={(branch) => setSelectedBranch(branch)}
+                    placeholder="Select branch…"
+                    searchPlaceholder="Search branches…"
+                    loading={branchesLoading}
+                    emptyText="No branches found"
+                    icon={GitBranch}
+                    renderSelected={(val) => val ? (
+                      <div className="flex items-center gap-2.5 truncate">
+                        <GitBranch className="w-4 h-4 text-emerald-500 shrink-0" />
+                        <span className="font-medium text-slate-700 truncate">{val.name}</span>
+                        {val.name === selectedRepo2?.default_branch && (
+                          <span className="px-1.5 py-0.5 bg-emerald-50 border border-emerald-200 rounded text-[9px] font-bold text-emerald-600 uppercase shrink-0">
+                            default
+                          </span>
+                        )}
+                      </div>
+                    ) : null}
+                    renderItem={(item, isSelected) => (
+                      <>
+                        <GitBranch className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                        <span className={cn(
+                          "font-medium truncate",
+                          isSelected ? "text-blue-700" : "text-slate-700"
+                        )}>
+                          {item.name}
+                        </span>
+                        {item.name === selectedRepo2?.default_branch && (
+                          <span className="px-1.5 py-0.5 bg-emerald-50 border border-emerald-200 rounded text-[9px] font-bold text-emerald-600 uppercase shrink-0">
+                            default
+                          </span>
+                        )}
+                        {item.protected && (
+                          <Lock className="w-3 h-3 text-amber-400 shrink-0" />
+                        )}
+                        {isSelected && <Check className="w-3.5 h-3.5 ml-auto text-blue-600 shrink-0" />}
+                      </>
+                    )}
+                  />
+                </>
+              )}
+
+              {/* ── Project Name ────────────────────────── */}
+              {selectedRepo2 && (
+                <>
+                  <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider pt-1">
+                    Project Name
+                  </p>
+                  <input
+                    value={projectName}
+                    onChange={(e) => setProjectName(e.target.value)}
+                    className="w-full px-3.5 py-2.5 text-sm border border-slate-200 rounded-xl bg-slate-50 text-slate-700 placeholder:text-slate-300 outline-none focus:border-blue-300 focus:ring-2 focus:ring-blue-50 transition-all"
+                    placeholder="My Project"
+                  />
+                </>
+              )}
             </div>
 
-            {/* ── AI Model Selector ── */}
+            {/* ── AI Model Selector ────────────────────── */}
             <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mt-1 mb-2">AI Model</p>
-
             <div className="space-y-2.5 mb-4">
-              {/* Model Dropdown */}
               <div className="relative">
                 <button
-                  onClick={() => { setShowModelDropdown(!showModelDropdown); setShowRepoDropdown(false); setShowBranchDropdown(false); setShowProviderDropdown(false); }}
+                  onClick={() => setShowModelDropdown(!showModelDropdown)}
                   className="w-full flex items-center justify-between px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-600 hover:border-slate-300 transition-all"
                 >
                   <div className="flex items-center gap-2.5">
@@ -264,10 +639,10 @@ export default function EngineerDashboardPage() {
                       </svg>
                     )}
                     <span className="font-medium">
-                      {selectedModel === 'google' ? 'Gemini 1.5 Pro' : 'Claude 3.5 Sonnet'}
+                      {selectedModel === 'google' ? 'Gemini 3 Flash Preview' : 'Claude 3.5 Sonnet'}
                     </span>
                     <span className="text-[10px] text-slate-400 ml-0.5">
-                      {selectedModel === 'google' ? 'Best for large files' : 'Best for reasoning'}
+                      {selectedModel === 'google' ? 'Fast inference' : 'Best for reasoning'}
                     </span>
                   </div>
                   <ChevronDown className={cn("w-4 h-4 text-slate-400 shrink-0 transition-transform", showModelDropdown && "rotate-180")} />
@@ -277,7 +652,6 @@ export default function EngineerDashboardPage() {
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => setShowModelDropdown(false)} />
                     <div className="absolute right-0 top-full mt-1.5 w-full bg-white rounded-xl border border-slate-200 overflow-hidden z-50 shadow-lg" style={{ backgroundColor: '#ffffff', zIndex: 50 }}>
-                      {/* Google Gemini */}
                       <button
                         onClick={() => { setSelectedModel('google'); setShowModelDropdown(false); }}
                         className={cn("w-full flex items-center gap-2.5 px-3.5 py-3 text-sm text-left hover:bg-slate-50 transition-colors", selectedModel === 'google' && "bg-blue-50")}
@@ -290,11 +664,10 @@ export default function EngineerDashboardPage() {
                         </svg>
                         <div className="flex-1">
                           <span className="font-semibold text-slate-900">Gemini 3 Flash Preview</span>
-                          <span className="text-[10px] text-slate-500">Fast inference · Latest preview model</span>
+                          <span className="text-[10px] text-slate-500"> · Fast inference</span>
                         </div>
                         {selectedModel === 'google' && <Check className="w-3.5 h-3.5 text-blue-600 shrink-0" />}
                       </button>
-                      {/* Anthropic Claude */}
                       <button
                         onClick={() => { setSelectedModel('anthropic'); setShowModelDropdown(false); }}
                         className={cn("w-full flex items-center gap-2.5 px-3.5 py-3 text-sm text-left hover:bg-slate-50 transition-colors border-t border-slate-100", selectedModel === 'anthropic' && "bg-blue-50")}
@@ -312,33 +685,36 @@ export default function EngineerDashboardPage() {
                   </>
                 )}
               </div>
-
-              {/* Custom API Key Input Removed - Using Environment Variable */}
             </div>
 
-            {/* Launch Button */}
+            {/* ── Create Project Button ─────────────────── */}
             <button
-              onClick={handleLaunch}
-              disabled={!localRepo || isLaunching}
+              onClick={handleCreateProject}
+              disabled={!canCreate}
               className={cn(
                 "w-full py-2.5 rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-all duration-300",
-                localRepo && !isLaunching
-                  ? "bg-gradient-to-r from-blue-600 to-blue-700 text-white hover:from-blue-700 hover:to-blue-800 shadow-sm shadow-blue-600/15"
+                canCreate
+                  ? "bg-gradient-to-r from-blue-600 to-blue-700 text-white hover:from-blue-700 hover:to-blue-800 shadow-sm shadow-blue-600/15 active:scale-[0.98]"
                   : "bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200"
               )}
             >
-              {isLaunching ? (
+              {isCreating ? (
                 <>
-                  <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  Launching...
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Creating…
                 </>
               ) : (
-                'Launch'
+                <>
+                  <Rocket className="w-4 h-4" />
+                  Create Project
+                </>
               )}
             </button>
           </div>
 
-          {/* RIGHT: Start from Scratch */}
+          {/* ════════════════════════════════════════════
+              RIGHT: Start from Scratch
+          ════════════════════════════════════════════ */}
           <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-soft flex flex-col">
             <div className="flex items-center gap-3 mb-3">
               <div className="w-8 h-8 rounded-lg bg-violet-50 border border-violet-100 flex items-center justify-center">
@@ -350,7 +726,6 @@ export default function EngineerDashboardPage() {
               Start a new conversation that is not connected to an existing repository. Perfect for quick experiments, boilerplates, or prototyping new ideas.
             </p>
 
-            {/* New Conversation Button */}
             <button
               onClick={handleNewConversation}
               className="w-full mt-6 py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 bg-blue-600 text-white hover:bg-blue-700 shadow-sm shadow-blue-600/20 transition-all active:scale-[0.98]"
@@ -375,7 +750,7 @@ export default function EngineerDashboardPage() {
         </div>
       </div>
 
-      {/* ── Dark mode toggle (bottom right) ── */}
+      {/* Dark mode toggle */}
       <button className="fixed bottom-6 right-6 w-10 h-10 bg-white border border-slate-200 rounded-full flex items-center justify-center shadow-soft hover:shadow-md transition-all z-30">
         <Moon className="w-4.5 h-4.5 text-slate-400" />
       </button>

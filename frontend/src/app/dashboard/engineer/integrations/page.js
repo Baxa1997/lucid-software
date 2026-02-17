@@ -1,14 +1,17 @@
 'use client';
 
 import { 
-  Github, ChevronDown, ChevronUp, ExternalLink, Check, 
-  AlertCircle, Settings2, User, Mail, Link2, X, Plus,
-  Trash2, Pencil
+  Github, ChevronDown, ExternalLink, Check, 
+  AlertCircle, User, Mail, X, Plus,
+  Trash2, Pencil, Loader2, CheckCircle2, XCircle, ShieldAlert
 } from 'lucide-react';
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { cn } from '@/lib/utils';
 
-/* GitLab SVG icon */
+/* ════════════════════════════════════════════════════════════
+   SVG ICONS
+   ════════════════════════════════════════════════════════════ */
+
 function GitLabIcon({ className }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="currentColor">
@@ -17,7 +20,6 @@ function GitLabIcon({ className }) {
   );
 }
 
-/* Notion SVG icon */
 function NotionIcon({ className }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="currentColor">
@@ -26,16 +28,133 @@ function NotionIcon({ className }) {
   );
 }
 
-/* ════════════════════════════════════════════════
-   GITHUB CARD
-   ════════════════════════════════════════════════ */
-function GitHubCard() {
+
+/* ════════════════════════════════════════════════════════════
+   TOAST NOTIFICATION
+   ════════════════════════════════════════════════════════════ */
+
+function Toast({ toast, onDismiss }) {
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    requestAnimationFrame(() => setVisible(true));
+    const timer = setTimeout(() => {
+      setVisible(false);
+      setTimeout(() => onDismiss(toast.id), 300);
+    }, 4000);
+    return () => clearTimeout(timer);
+  }, [toast.id, onDismiss]);
+
+  const isSuccess = toast.type === 'success';
+
+  return (
+    <div
+      className={cn(
+        "flex items-center gap-3 px-5 py-3.5 rounded-2xl border shadow-xl backdrop-blur-sm transition-all duration-300",
+        visible ? "translate-y-0 opacity-100" : "translate-y-4 opacity-0",
+        isSuccess
+          ? "bg-emerald-50/95 border-emerald-200 text-emerald-800"
+          : "bg-red-50/95 border-red-200 text-red-800"
+      )}
+    >
+      {isSuccess ? (
+        <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0" />
+      ) : (
+        <XCircle className="w-5 h-5 text-red-500 shrink-0" />
+      )}
+      <p className="text-sm font-medium">{toast.message}</p>
+      <button
+        onClick={() => { setVisible(false); setTimeout(() => onDismiss(toast.id), 300); }}
+        className="ml-2 p-1 rounded-lg hover:bg-black/5 transition-colors shrink-0"
+      >
+        <X className="w-3.5 h-3.5" />
+      </button>
+    </div>
+  );
+}
+
+function ToastContainer({ toasts, onDismiss }) {
+  if (!toasts.length) return null;
+  return (
+    <div className="fixed bottom-6 right-6 z-[100] flex flex-col gap-3">
+      {toasts.map((t) => (
+        <Toast key={t.id} toast={t} onDismiss={onDismiss} />
+      ))}
+    </div>
+  );
+}
+
+
+/* ════════════════════════════════════════════════════════════
+   GITHUB ACCORDION CARD
+   ════════════════════════════════════════════════════════════ */
+
+function GitHubCard({ integration, onRefresh, addToast }) {
   const [expanded, setExpanded] = useState(false);
-  const [token, setToken] = useState('ghp_xxxxxxxxxxxxxxxxxxxx');
-  const [host, setHost] = useState('github.com');
-  const [showToken, setShowToken] = useState(false);
-  const [tokenValid, setTokenValid] = useState(true);
-  const [connected, setConnected] = useState(true);
+  const [token, setToken] = useState('');
+  const [label, setLabel] = useState('');
+  const [isVerifying, setIsVerifying] = useState(false);
+  const [error, setError] = useState(null);
+
+  const connected = !!integration;
+  const username = integration?.externalUsername;
+
+  const handleConnect = async () => {
+    if (!token.trim()) return;
+    setError(null);
+    setIsVerifying(true);
+
+    try {
+      const res = await fetch('/api/integrations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: 'GITHUB',
+          token: token.trim(),
+          label: label.trim() || null,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setError(data.error || 'Invalid token or missing scopes.');
+        setIsVerifying(false);
+        return;
+      }
+
+      const connectedUser = data.integration?.externalUsername;
+      addToast(
+        connectedUser
+          ? `Successfully connected as @${connectedUser}`
+          : 'GitHub integration connected successfully.',
+        'success'
+      );
+      setToken('');
+      setLabel('');
+      setExpanded(false);
+      onRefresh();
+    } catch (err) {
+      setError('Network error. Please check your connection and try again.');
+    } finally {
+      setIsVerifying(false);
+    }
+  };
+
+  const handleDisconnect = async () => {
+    if (!integration?.id) return;
+    try {
+      const res = await fetch(`/api/integrations?id=${integration.id}`, { method: 'DELETE' });
+      if (res.ok) {
+        addToast('GitHub integration disconnected.', 'success');
+        onRefresh();
+      } else {
+        addToast('Failed to disconnect.', 'error');
+      }
+    } catch {
+      addToast('Network error while disconnecting.', 'error');
+    }
+  };
 
   return (
     <div className={cn(
@@ -54,10 +173,19 @@ function GitHubCard() {
         <div className="flex-1 min-w-0">
           <h3 className="text-sm font-bold text-slate-900">GitHub</h3>
           <div className="flex items-center gap-1.5 mt-0.5">
-            <div className={cn("w-1.5 h-1.5 rounded-full", connected ? "bg-emerald-500" : "bg-slate-300")} />
-            <span className={cn("text-xs font-medium", connected ? "text-emerald-600" : "text-slate-400")}>
-              {connected ? 'Connected' : 'Not connected'}
-            </span>
+            {connected ? (
+              <>
+                <div className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                <span className="text-xs font-medium text-emerald-600">
+                  Connected as <span className="font-bold">@{username || '...'}</span>
+                </span>
+              </>
+            ) : (
+              <>
+                <div className="w-1.5 h-1.5 rounded-full bg-slate-300" />
+                <span className="text-xs font-medium text-slate-400">Not connected</span>
+              </>
+            )}
           </div>
         </div>
         <div className={cn(
@@ -71,13 +199,45 @@ function GitHubCard() {
       {/* Expanded Content */}
       <div className={cn(
         "overflow-hidden transition-all duration-300 ease-in-out",
-        expanded ? "max-h-[500px] opacity-100" : "max-h-0 opacity-0"
+        expanded ? "max-h-[600px] opacity-100" : "max-h-0 opacity-0"
       )}>
         <div className="px-5 pb-5 pt-1 border-t border-slate-100 space-y-5">
+          {/* Error Alert */}
+          {error && (
+            <div className="flex items-start gap-3 p-4 bg-red-50 border border-red-200 rounded-xl animate-shake">
+              <ShieldAlert className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-semibold text-red-800">Connection Failed</p>
+                <p className="text-xs text-red-600 mt-0.5">{error}</p>
+              </div>
+              <button
+                onClick={() => setError(null)}
+                className="ml-auto p-1 rounded-lg hover:bg-red-100 transition-colors shrink-0"
+              >
+                <X className="w-3.5 h-3.5 text-red-400" />
+              </button>
+            </div>
+          )}
+
+          {/* Label */}
+          <div>
+            <label className="text-sm font-medium text-slate-700 mb-2 block">
+              Label <span className="text-slate-400 font-normal">(optional)</span>
+            </label>
+            <input
+              type="text"
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              disabled={isVerifying}
+              placeholder="e.g. Personal GitHub"
+              className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-700 placeholder-slate-400 focus:border-blue-300 focus:ring-2 focus:ring-blue-500/10 outline-none transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            />
+          </div>
+
           {/* Token */}
           <div>
             <label className="flex items-center gap-2 text-sm font-medium text-slate-700 mb-2">
-              {tokenValid && (
+              {connected && (
                 <span className="w-5 h-5 rounded-full bg-emerald-100 flex items-center justify-center">
                   <Check className="w-3 h-3 text-emerald-600" />
                 </span>
@@ -85,46 +245,67 @@ function GitHubCard() {
               GitHub Token
             </label>
             <input
-              type={showToken ? 'text' : 'password'}
+              type="password"
               value={token}
               onChange={(e) => setToken(e.target.value)}
-              placeholder="<hidden>"
-              className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-700 placeholder-slate-400 focus:border-blue-300 focus:ring-2 focus:ring-blue-500/10 outline-none transition-all"
-            />
-          </div>
-
-          {/* Host */}
-          <div>
-            <label className="text-sm font-medium text-slate-700 mb-2 block">
-              GitHub Host <span className="text-slate-400 font-normal">(optional)</span>
-            </label>
-            <input
-              type="text"
-              value={host}
-              onChange={(e) => setHost(e.target.value)}
-              placeholder="github.com"
-              className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-700 placeholder-slate-400 focus:border-blue-300 focus:ring-2 focus:ring-blue-500/10 outline-none transition-all"
+              disabled={isVerifying}
+              placeholder={connected ? '••••••••••••••••••••' : 'ghp_xxxxxxxxxxxxxxxxxxxx'}
+              className={cn(
+                "w-full px-4 py-2.5 bg-slate-50 border rounded-xl text-sm text-slate-700 placeholder-slate-400 outline-none transition-all disabled:opacity-50 disabled:cursor-not-allowed",
+                error
+                  ? "border-red-300 focus:border-red-400 focus:ring-2 focus:ring-red-500/10"
+                  : "border-slate-200 focus:border-blue-300 focus:ring-2 focus:ring-blue-500/10"
+              )}
             />
           </div>
 
           {/* Help */}
           <p className="text-xs text-slate-400">
-            Get your{' '}
-            <a href="#" className="text-blue-600 hover:text-blue-500 underline underline-offset-2">GitHub token</a>
-            {' '}or{' '}
-            <a href="#" className="text-blue-600 hover:text-blue-500 underline underline-offset-2">click here for instructions</a>
+            Need a token?{' '}
+            <a
+              href="https://github.com/settings/tokens/new"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-blue-600 hover:text-blue-500 underline underline-offset-2 inline-flex items-center gap-1"
+            >
+              Create one on GitHub <ExternalLink className="w-3 h-3" />
+            </a>
           </p>
 
           {/* Actions */}
           <div className="flex items-center justify-between pt-2">
+            {connected ? (
+              <button
+                onClick={handleDisconnect}
+                className="px-4 py-2 bg-red-500 text-white rounded-xl text-sm font-bold hover:bg-red-600 transition-colors"
+              >
+                Disconnect
+              </button>
+            ) : (
+              <div />
+            )}
             <button
-              onClick={() => setConnected(false)}
-              className="px-4 py-2 bg-red-500 text-white rounded-xl text-sm font-bold hover:bg-red-600 transition-colors"
+              onClick={handleConnect}
+              disabled={!token.trim() || isVerifying}
+              className={cn(
+                "flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-bold transition-all shadow-sm min-w-[190px] justify-center",
+                isVerifying
+                  ? "bg-blue-500 text-white cursor-wait"
+                  : !token.trim()
+                    ? "bg-slate-100 text-slate-400 cursor-not-allowed shadow-none"
+                    : "bg-blue-600 text-white hover:bg-blue-700 shadow-blue-600/15"
+              )}
             >
-              Disconnect
-            </button>
-            <button className="px-5 py-2 bg-blue-600 text-white rounded-xl text-sm font-bold hover:bg-blue-700 transition-colors shadow-sm shadow-blue-600/15">
-              Save Changes
+              {isVerifying ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Verifying with GitHub...
+                </>
+              ) : connected ? (
+                'Update Token'
+              ) : (
+                'Connect'
+              )}
             </button>
           </div>
         </div>
@@ -133,17 +314,78 @@ function GitHubCard() {
   );
 }
 
-/* ════════════════════════════════════════════════
-   GITLAB CARD
-   ════════════════════════════════════════════════ */
-function GitLabCard() {
+
+/* ════════════════════════════════════════════════════════════
+   GITLAB ACCORDION CARD
+   ════════════════════════════════════════════════════════════ */
+
+function GitLabCard({ integration, onRefresh, addToast }) {
   const [expanded, setExpanded] = useState(false);
-  const [token, setToken] = useState('glpat-xxxxxxxxxxxxxxxxxxxx');
-  const [host, setHost] = useState('https://gitlab.udevs.io/');
-  const [showToken, setShowToken] = useState(false);
-  const [tokenValid, setTokenValid] = useState(true);
-  const [hostValid, setHostValid] = useState(true);
-  const [connected, setConnected] = useState(true);
+  const [token, setToken] = useState('');
+  const [label, setLabel] = useState('');
+  const [host, setHost] = useState('https://gitlab.com');
+  const [isVerifying, setIsVerifying] = useState(false);
+  const [error, setError] = useState(null);
+
+  const connected = !!integration;
+  const username = integration?.externalUsername;
+
+  const handleConnect = async () => {
+    if (!token.trim()) return;
+    setError(null);
+    setIsVerifying(true);
+
+    try {
+      const res = await fetch('/api/integrations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: 'GITLAB',
+          token: token.trim(),
+          label: label.trim() || null,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setError(data.error || 'Invalid token or missing scopes.');
+        setIsVerifying(false);
+        return;
+      }
+
+      const connectedUser = data.integration?.externalUsername;
+      addToast(
+        connectedUser
+          ? `Successfully connected as @${connectedUser}`
+          : 'GitLab integration connected successfully.',
+        'success'
+      );
+      setToken('');
+      setLabel('');
+      setExpanded(false);
+      onRefresh();
+    } catch (err) {
+      setError('Network error. Please check your connection and try again.');
+    } finally {
+      setIsVerifying(false);
+    }
+  };
+
+  const handleDisconnect = async () => {
+    if (!integration?.id) return;
+    try {
+      const res = await fetch(`/api/integrations?id=${integration.id}`, { method: 'DELETE' });
+      if (res.ok) {
+        addToast('GitLab integration disconnected.', 'success');
+        onRefresh();
+      } else {
+        addToast('Failed to disconnect.', 'error');
+      }
+    } catch {
+      addToast('Network error while disconnecting.', 'error');
+    }
+  };
 
   return (
     <div className={cn(
@@ -162,10 +404,19 @@ function GitLabCard() {
         <div className="flex-1 min-w-0">
           <h3 className="text-sm font-bold text-slate-900">GitLab</h3>
           <div className="flex items-center gap-1.5 mt-0.5">
-            <div className={cn("w-1.5 h-1.5 rounded-full", connected ? "bg-emerald-500" : "bg-slate-300")} />
-            <span className={cn("text-xs font-medium", connected ? "text-emerald-600" : "text-slate-400")}>
-              {connected ? 'Connected' : 'Not connected'}
-            </span>
+            {connected ? (
+              <>
+                <div className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                <span className="text-xs font-medium text-emerald-600">
+                  Connected as <span className="font-bold">@{username || '...'}</span>
+                </span>
+              </>
+            ) : (
+              <>
+                <div className="w-1.5 h-1.5 rounded-full bg-slate-300" />
+                <span className="text-xs font-medium text-slate-400">Not connected</span>
+              </>
+            )}
           </div>
         </div>
         <div className={cn(
@@ -179,13 +430,45 @@ function GitLabCard() {
       {/* Expanded Content */}
       <div className={cn(
         "overflow-hidden transition-all duration-300 ease-in-out",
-        expanded ? "max-h-[500px] opacity-100" : "max-h-0 opacity-0"
+        expanded ? "max-h-[700px] opacity-100" : "max-h-0 opacity-0"
       )}>
         <div className="px-5 pb-5 pt-1 border-t border-slate-100 space-y-5">
+          {/* Error Alert */}
+          {error && (
+            <div className="flex items-start gap-3 p-4 bg-red-50 border border-red-200 rounded-xl animate-shake">
+              <ShieldAlert className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-semibold text-red-800">Connection Failed</p>
+                <p className="text-xs text-red-600 mt-0.5">{error}</p>
+              </div>
+              <button
+                onClick={() => setError(null)}
+                className="ml-auto p-1 rounded-lg hover:bg-red-100 transition-colors shrink-0"
+              >
+                <X className="w-3.5 h-3.5 text-red-400" />
+              </button>
+            </div>
+          )}
+
+          {/* Label */}
+          <div>
+            <label className="text-sm font-medium text-slate-700 mb-2 block">
+              Label <span className="text-slate-400 font-normal">(optional)</span>
+            </label>
+            <input
+              type="text"
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              disabled={isVerifying}
+              placeholder="e.g. Work GitLab"
+              className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-700 placeholder-slate-400 focus:border-blue-300 focus:ring-2 focus:ring-blue-500/10 outline-none transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            />
+          </div>
+
           {/* Token */}
           <div>
             <label className="flex items-center gap-2 text-sm font-medium text-slate-700 mb-2">
-              {tokenValid && (
+              {connected && (
                 <span className="w-5 h-5 rounded-full bg-emerald-100 flex items-center justify-center">
                   <Check className="w-3 h-3 text-emerald-600" />
                 </span>
@@ -193,18 +476,24 @@ function GitLabCard() {
               GitLab Token
             </label>
             <input
-              type={showToken ? 'text' : 'password'}
+              type="password"
               value={token}
               onChange={(e) => setToken(e.target.value)}
-              placeholder="<hidden>"
-              className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-700 placeholder-slate-400 focus:border-blue-300 focus:ring-2 focus:ring-blue-500/10 outline-none transition-all"
+              disabled={isVerifying}
+              placeholder={connected ? '••••••••••••••••••••' : 'glpat-xxxxxxxxxxxxxxxxxxxx'}
+              className={cn(
+                "w-full px-4 py-2.5 bg-slate-50 border rounded-xl text-sm text-slate-700 placeholder-slate-400 outline-none transition-all disabled:opacity-50 disabled:cursor-not-allowed",
+                error
+                  ? "border-red-300 focus:border-red-400 focus:ring-2 focus:ring-red-500/10"
+                  : "border-slate-200 focus:border-blue-300 focus:ring-2 focus:ring-blue-500/10"
+              )}
             />
           </div>
 
           {/* Host */}
           <div>
             <label className="flex items-center gap-2 text-sm font-medium text-slate-700 mb-2">
-              {hostValid && (
+              {host && (
                 <span className="w-5 h-5 rounded-full bg-emerald-100 flex items-center justify-center">
                   <Check className="w-3 h-3 text-emerald-600" />
                 </span>
@@ -215,29 +504,59 @@ function GitLabCard() {
               type="text"
               value={host}
               onChange={(e) => setHost(e.target.value)}
+              disabled={isVerifying}
               placeholder="https://gitlab.com"
-              className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-700 placeholder-slate-400 focus:border-blue-300 focus:ring-2 focus:ring-blue-500/10 outline-none transition-all"
+              className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-700 placeholder-slate-400 focus:border-blue-300 focus:ring-2 focus:ring-blue-500/10 outline-none transition-all disabled:opacity-50 disabled:cursor-not-allowed"
             />
           </div>
 
           {/* Help */}
           <p className="text-xs text-slate-400">
-            Get your{' '}
-            <a href="#" className="text-blue-600 hover:text-blue-500 underline underline-offset-2">GitLab token</a>
-            {' '}or{' '}
-            <a href="#" className="text-blue-600 hover:text-blue-500 underline underline-offset-2">click here for instructions</a>
+            Need a token?{' '}
+            <a
+              href="https://gitlab.com/-/user_settings/personal_access_tokens"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-blue-600 hover:text-blue-500 underline underline-offset-2 inline-flex items-center gap-1"
+            >
+              Create one on GitLab <ExternalLink className="w-3 h-3" />
+            </a>
           </p>
 
           {/* Actions */}
           <div className="flex items-center justify-between pt-2">
+            {connected ? (
+              <button
+                onClick={handleDisconnect}
+                className="px-4 py-2 bg-red-500 text-white rounded-xl text-sm font-bold hover:bg-red-600 transition-colors"
+              >
+                Disconnect
+              </button>
+            ) : (
+              <div />
+            )}
             <button
-              onClick={() => setConnected(false)}
-              className="px-4 py-2 bg-red-500 text-white rounded-xl text-sm font-bold hover:bg-red-600 transition-colors"
+              onClick={handleConnect}
+              disabled={!token.trim() || isVerifying}
+              className={cn(
+                "flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-bold transition-all shadow-sm min-w-[190px] justify-center",
+                isVerifying
+                  ? "bg-blue-500 text-white cursor-wait"
+                  : !token.trim()
+                    ? "bg-slate-100 text-slate-400 cursor-not-allowed shadow-none"
+                    : "bg-blue-600 text-white hover:bg-blue-700 shadow-blue-600/15"
+              )}
             >
-              Disconnect
-            </button>
-            <button className="px-5 py-2 bg-blue-600 text-white rounded-xl text-sm font-bold hover:bg-blue-700 transition-colors shadow-sm shadow-blue-600/15">
-              Save Changes
+              {isVerifying ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Verifying with GitLab...
+                </>
+              ) : connected ? (
+                'Update Token'
+              ) : (
+                'Connect'
+              )}
             </button>
           </div>
         </div>
@@ -246,9 +565,11 @@ function GitLabCard() {
   );
 }
 
-/* ════════════════════════════════════════════════
-   NOTION CARD (Multi-project)
-   ════════════════════════════════════════════════ */
+
+/* ════════════════════════════════════════════════════════════
+   NOTION CARD (Multi-project — unchanged)
+   ════════════════════════════════════════════════════════════ */
+
 function NotionCard() {
   const [expanded, setExpanded] = useState(false);
   const [connected, setConnected] = useState(true);
@@ -259,12 +580,10 @@ function NotionCard() {
     { id: 2, name: 'Lodify', databaseId: '2c505496...', active: false },
   ]);
 
-  // New project form
   const [newName, setNewName] = useState('');
   const [newToken, setNewToken] = useState('');
   const [newDbId, setNewDbId] = useState('');
 
-  // Edit mode
   const [editingId, setEditingId] = useState(null);
   const [editName, setEditName] = useState('');
   const [editToken, setEditToken] = useState('');
@@ -531,12 +850,53 @@ function NotionCard() {
   );
 }
 
-/* ════════════════════════════════════════════════
+
+/* ════════════════════════════════════════════════════════════
    MAIN INTEGRATIONS PAGE
-   ════════════════════════════════════════════════ */
+   ════════════════════════════════════════════════════════════ */
+
 export default function IntegrationsPage() {
   const [gitUsername, setGitUsername] = useState('AI Engineer');
   const [gitEmail, setGitEmail] = useState('ai@lucid.ai');
+
+  // ── Integration data from API ──────────────────────
+  const [integrations, setIntegrations] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  // ── Toast notifications ────────────────────────────
+  const [toasts, setToasts] = useState([]);
+
+  const addToast = useCallback((message, type = 'success') => {
+    const id = Date.now() + Math.random();
+    setToasts((prev) => [...prev, { id, message, type }]);
+  }, []);
+
+  const dismissToast = useCallback((id) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
+
+  // ── Fetch integrations from API ────────────────────
+  const fetchIntegrations = useCallback(async () => {
+    try {
+      const res = await fetch('/api/integrations');
+      if (res.ok) {
+        const data = await res.json();
+        setIntegrations(data.integrations || []);
+      }
+    } catch (err) {
+      console.error('Failed to fetch integrations:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchIntegrations();
+  }, [fetchIntegrations]);
+
+  // ── Helpers ────────────────────────────────────────
+  const githubIntegration = integrations.find((i) => i.provider === 'GITHUB');
+  const gitlabIntegration = integrations.find((i) => i.provider === 'GITLAB');
 
   return (
     <div className="min-h-full bg-[#f5f7fa]">
@@ -554,9 +914,35 @@ export default function IntegrationsPage() {
 
         {/* Integration Cards */}
         <div className="space-y-3 mb-8">
-          <GitHubCard />
-          <GitLabCard />
-          <NotionCard />
+          {loading ? (
+            <>
+              {[1, 2, 3].map((i) => (
+                <div key={i} className="bg-white rounded-2xl border border-slate-200 px-5 py-4 animate-pulse">
+                  <div className="flex items-center gap-4">
+                    <div className="w-10 h-10 rounded-xl bg-slate-100" />
+                    <div className="flex-1 space-y-2">
+                      <div className="h-4 w-24 bg-slate-100 rounded" />
+                      <div className="h-3 w-32 bg-slate-50 rounded" />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </>
+          ) : (
+            <>
+              <GitHubCard
+                integration={githubIntegration}
+                onRefresh={fetchIntegrations}
+                addToast={addToast}
+              />
+              <GitLabCard
+                integration={gitlabIntegration}
+                onRefresh={fetchIntegrations}
+                addToast={addToast}
+              />
+              <NotionCard />
+            </>
+          )}
         </div>
 
         {/* Git Settings */}
@@ -593,6 +979,24 @@ export default function IntegrationsPage() {
           </div>
         </div>
       </div>
+
+      {/* ── Toast notifications ── */}
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+
+      {/* ── Inline animations ── */}
+      <style jsx global>{`
+        @keyframes fade-in {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+        @keyframes shake {
+          0%, 100% { transform: translateX(0); }
+          10%, 30%, 50%, 70%, 90% { transform: translateX(-4px); }
+          20%, 40%, 60%, 80% { transform: translateX(4px); }
+        }
+        .animate-fade-in { animation: fade-in 0.2s ease-out; }
+        .animate-shake { animation: shake 0.4s ease-out; }
+      `}</style>
     </div>
   );
 }

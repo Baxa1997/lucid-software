@@ -4,7 +4,8 @@
 // ─────────────────────────────────────────────────────────
 
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-arm64-openssl-1.1.x", "linux-musl-openssl-3.0.x"]
 }
 
 datasource db {
@@ -74,8 +75,9 @@ model User {
   accounts Account[]
 
   // Multi-tenancy: user can belong to multiple orgs
-  memberships  Membership[]
+  memberships   Membership[]
   agentSessions AgentSession[]
+  integrations  Integration[]
 
   @@map("users")
 }
@@ -139,6 +141,10 @@ model Project {
   orgId     String
   org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
+  // Which encrypted token to use when cloning this repo
+  integrationId String?
+  integration   Integration? @relation(fields: [integrationId], references: [id], onDelete: SetNull)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -148,7 +154,7 @@ model Project {
 }
 
 // ═══════════════════════════════════════════════════════════
-//  INTEGRATION — Encrypted Git Provider Tokens
+//  INTEGRATION — Encrypted Git Provider Tokens (User-owned)
 // ═══════════════════════════════════════════════════════════
 
 model Integration {
@@ -156,22 +162,32 @@ model Integration {
   provider GitProvider
   label    String?     // e.g. "Work GitHub", "Personal GitLab"
 
-  // Encrypted access token (AES-256-CBC)
-  accessTokenEncrypted String @db.Text
-  iv                   String // Initialization vector (hex)
+  // Encrypted access token (AES-256-CTR)
+  encryptedToken String @db.Text
+  iv             String // Initialization vector (hex)
 
   // Optional metadata
   externalUsername String?
   scopes           String?  // comma-separated scopes
   expiresAt        DateTime?
 
+  // User-level ownership — who connected this token
+  userId String
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Org-level visibility — which org this integration belongs to
   orgId String
   org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  // Projects using this integration
+  projects Project[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@unique([orgId, provider]) // one integration per provider per org
+  @@unique([userId, provider, label]) // one integration per provider+label per user
+  @@index([orgId])
+  @@index([userId])
   @@map("integrations")
 }
 

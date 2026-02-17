@@ -70,8 +70,9 @@ const DEFAULT_TREE = [
 // ── TreeNode component ─────────────────────────────────────
 function TreeNode({ node, depth = 0, selectedFile, onFileSelect, parentPath = '' }) {
   const [isOpen, setIsOpen] = useState(depth < 2);
-  const filePath = parentPath ? `${parentPath}/${node.name}` : node.name;
-  const isDir = node.type === 'dir';
+  // Use the node's `path` if provided by backend, otherwise build it
+  const filePath = node.path || (parentPath ? `${parentPath}/${node.name}` : node.name);
+  const isDir = node.type === 'dir' || node.type === 'folder';
   const isSelected = selectedFile === filePath;
   const { icon: FileIcon, color: fileColor } = getFileIcon(node.name);
 
@@ -156,6 +157,7 @@ export default function FileExplorer({
       if (typeof files[0] === 'string') {
         return buildTreeFromPaths(files);
       }
+      // Normalize: backend sends type: "folder", we accept both "folder" and "dir"
       return files;
     }
     return DEFAULT_TREE;

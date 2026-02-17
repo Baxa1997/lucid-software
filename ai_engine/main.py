@@ -12,6 +12,8 @@ import asyncio
 import logging
 import subprocess
 import threading
+import json
+import re
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from contextlib import asynccontextmanager
@@ -367,6 +369,7 @@ class InitSessionRequest(BaseModel):
     token: Optional[str] = None            # Auth token (JWT)
     repoUrl: Optional[str] = None          # Git repo to clone
     gitToken: Optional[str] = None         # Git auth token (PAT)
+    branch: Optional[str] = None           # Git branch to clone (default: repo default)
     task: str                              # The task for the agent
     projectId: Optional[str] = None        # Optional project context
     model_provider: Optional[str] = None   # "google" | "anthropic"
@@ -499,15 +502,18 @@ async def init_session(payload: InitSessionRequest):
                             f"https://oauth2:{payload.gitToken}@",
                         )
 
-                result = workspace.execute_command(
-                    f"git clone --depth 1 {clone_url} {WORKSPACE_MOUNT_PATH}/repo"
-                )
+                # Build clone command with optional branch
+                branch_flag = f" -b {payload.branch}" if payload.branch else ""
+                clone_cmd = f"git clone --depth 1{branch_flag} {clone_url} {WORKSPACE_MOUNT_PATH}/repo"
+
+                result = workspace.execute_command(clone_cmd)
                 if result.exit_code != 0:
                     logger.warning(
                         f"⚠️  Git clone failed: {result.stdout}"
                     )
                 else:
-                    logger.info(f"📦 Repo cloned: {payload.repoUrl}")
+                    branch_info = f" on branch '{payload.branch}'" if payload.branch else ""
+                    logger.info(f"✅ Cloned repository '{payload.repoUrl}'{branch_info}")
         else:
             # Dev mode: local filesystem workspace
             workspace_dir = f"/tmp/lucid_workspace/{session_id}"
@@ -620,6 +626,103 @@ async def stop_session(session_id: str):
 
 
 # ═══════════════════════════════════════════════════════════
+#  File Management Endpoints
+# ═══════════════════════════════════════════════════════════
+
+
+@app.get("/api/files/read")
+async def read_file(session_id: str, path: str):
+    """
+    Read a file from the agent's workspace.
+
+    Query Params:
+      - session_id: The active agent session ID
+      - path: Absolute path to the file inside the workspace
+
+    Returns: { "content": "..." }
+    """
+    session = active_sessions.get(session_id)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found.",
+        )
+
+    # Sanitize path — prevent traversal attacks
+    if ".." in path:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Path traversal not allowed.",
+        )
+
+    try:
+        workspace = session.workspace
+
+        if isinstance(workspace, str):
+            # Local workspace — read from filesystem
+            full_path = os.path.join(workspace, path.lstrip("/"))
+            if not os.path.isfile(full_path):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"File not found: {path}",
+                )
+            with open(full_path, "r", errors="replace") as f:
+                content = f.read()
+        else:
+            # Remote workspace (Docker sandbox)
+            safe_path = path.replace('"', '\\"')
+            result = await asyncio.to_thread(
+                workspace.execute_command,
+                f'cat "{safe_path}"',
+            )
+            if result.exit_code != 0:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"File not found or unreadable: {path}",
+                )
+            content = result.stdout if hasattr(result, 'stdout') else str(result)
+
+        return {"content": content}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ read_file error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to read file: {str(e)}",
+        )
+
+
+@app.get("/api/files/list")
+async def list_files_endpoint(session_id: str):
+    """
+    List all files in the agent's workspace.
+
+    Query Params:
+      - session_id: The active agent session ID
+
+    Returns: { "tree": [ { name, type, path, children? }, ... ] }
+    """
+    session = active_sessions.get(session_id)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found.",
+        )
+
+    try:
+        tree = await _list_files_in_workspace(session)
+        return {"tree": tree}
+    except Exception as e:
+        logger.error(f"❌ list_files error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list files: {str(e)}",
+        )
+
+
+# ═══════════════════════════════════════════════════════════
 #  WebSocket /ws
 # ═══════════════════════════════════════════════════════════
 
@@ -660,6 +763,7 @@ async def websocket_agent(websocket: WebSocket):
 
         token = raw.get("token", "")
         repo_url = raw.get("repoUrl", "")
+        branch = raw.get("branch", "")  # specific branch to clone
         task = raw.get("task", "")
         project_id = raw.get("projectId", "")
         model_provider = raw.get("modelProvider", raw.get("model_provider", DEFAULT_PROVIDER))
@@ -733,10 +837,11 @@ async def websocket_agent(websocket: WebSocket):
 
             # Clone repo if provided
             if repo_url:
+                branch_label = f" (branch: {branch})" if branch else ""
                 await websocket.send_json({
                     "type": "agent_event",
                     "event": "system",
-                    "content": f"Cloning repository: {repo_url}...",
+                    "content": f"Cloning repository: {repo_url}{branch_label}...",
                 })
 
                 clone_url = repo_url
@@ -745,17 +850,28 @@ async def websocket_agent(websocket: WebSocket):
                         "https://",
                         f"https://x-access-token:{token}@",
                     )
+                elif token and "gitlab" in repo_url:
+                    clone_url = repo_url.replace(
+                        "https://",
+                        f"https://oauth2:{token}@",
+                    )
+
+                # Build clone command with optional branch
+                branch_flag = f" -b {branch}" if branch else ""
+                clone_cmd = f"git clone --depth 1{branch_flag} {clone_url} {WORKSPACE_MOUNT_PATH}/repo"
 
                 result = await asyncio.to_thread(
                     workspace.execute_command,
-                    f"git clone --depth 1 {clone_url} {WORKSPACE_MOUNT_PATH}/repo",
+                    clone_cmd,
                 )
 
                 if result.exit_code == 0:
+                    branch_info = f" on branch '{branch}'" if branch else ""
+                    repo_name = repo_url.rstrip('/').split('/')[-1].replace('.git', '')
                     await websocket.send_json({
                         "type": "agent_event",
                         "event": "system",
-                        "content": f"✅ Repository cloned successfully.",
+                        "content": f"✅ Cloned repository '{repo_name}'{branch_info}.",
                     })
                 else:
                     await websocket.send_json({
@@ -982,6 +1098,9 @@ async def _stream_events_to_ws(
     """
     Background task: reads events from the session's buffer
     queue and sends them to the WebSocket client in real-time.
+
+    Auto-triggers a file_tree refresh when file-changing events
+    are detected (create, write, rm, git clone, etc.).
     """
     try:
         while session.is_alive:
@@ -990,6 +1109,21 @@ async def _stream_events_to_ws(
                     session.event_buffer.get(), timeout=1.0
                 )
                 await websocket.send_json(event_data)
+
+                # ── Auto-sync: refresh file tree on file-changing events ──
+                if _should_refresh_file_tree(event_data):
+                    try:
+                        tree = await _list_files_in_workspace(session)
+                        await websocket.send_json({
+                            "type": "file_tree",
+                            "tree": tree,
+                            "timestamp": _now_iso(),
+                        })
+                    except Exception as tree_err:
+                        logger.warning(
+                            f"⚠️  File tree refresh failed: {tree_err}"
+                        )
+
             except asyncio.TimeoutError:
                 continue  # No events yet, keep polling
             except Exception:
@@ -1187,6 +1321,208 @@ async def _destroy_session(session_id: str):
 def _now_iso() -> str:
     """Return current UTC time as ISO string."""
     return datetime.now(timezone.utc).isoformat()
+
+
+# ── File-change detection patterns ────────────────────────
+# Commands / event types that indicate the workspace file tree
+# may have changed and should be re-sent to the frontend.
+_FILE_CHANGE_COMMANDS = re.compile(
+    r"\b(touch|mkdir|rm|rmdir|mv|cp|git\s+clone|git\s+checkout|"
+    r"git\s+pull|wget|curl\s+-[oO]|unzip|tar|npm\s+init|pip\s+install|"
+    r"npx|create-react-app|tee|dd|install)\b",
+    re.IGNORECASE,
+)
+
+_FILE_CHANGE_EVENT_TYPES = {
+    "FileWriteAction", "FileWriteObservation",
+    "FileEditAction", "FileEditObservation",
+    "FileCreateAction", "FileCreateObservation",
+    "FileDeleteAction", "FileDeleteObservation",
+    "CmdRunAction",  # handled via command regex below
+}
+
+
+def _should_refresh_file_tree(event_data: dict) -> bool:
+    """
+    Determine if an agent event indicates the workspace file tree
+    may have changed. Used to auto-send file_tree updates.
+    """
+    event_type = event_data.get("eventType", "")
+
+    # File write / edit / create / delete events always trigger refresh
+    if event_type in _FILE_CHANGE_EVENT_TYPES and event_type != "CmdRunAction":
+        return True
+
+    # For command events, check the actual command text
+    command = event_data.get("command", "") or event_data.get("content", "")
+    if command and _FILE_CHANGE_COMMANDS.search(command):
+        return True
+
+    return False
+
+
+async def _list_files_in_workspace(
+    session: AgentSession,
+    root: str = WORKSPACE_MOUNT_PATH,
+) -> List[dict]:
+    """
+    List all files in the agent's workspace as a recursive tree.
+
+    For remote workspaces (Docker): runs `find` inside the container.
+    For local workspaces: uses os.walk on the host filesystem.
+
+    Returns:
+        [
+            { "name": "src", "type": "folder", "path": "/workspace/src", "children": [...] },
+            { "name": "main.py", "type": "file", "path": "/workspace/main.py" },
+        ]
+    """
+    workspace = session.workspace
+
+    if isinstance(workspace, str):
+        # ── Local workspace ──────────────────────────────
+        return _build_local_file_tree(workspace)
+    else:
+        # ── Remote workspace (Docker sandbox) ────────────
+        return await _build_remote_file_tree(workspace, root)
+
+
+def _build_local_file_tree(root_dir: str) -> List[dict]:
+    """
+    Build a file tree from a local directory using os.walk.
+    Excludes common noise directories (.git, node_modules, __pycache__, .next).
+    """
+    EXCLUDE_DIRS = {
+        ".git", "node_modules", "__pycache__", ".next",
+        ".venv", "venv", ".mypy_cache", ".pytest_cache",
+        "dist", "build", ".tox", ".eggs",
+    }
+
+    def walk_dir(dir_path: str) -> List[dict]:
+        entries = []
+        try:
+            items = sorted(os.listdir(dir_path))
+        except PermissionError:
+            return entries
+
+        for item in items:
+            full_path = os.path.join(dir_path, item)
+            rel_path = os.path.relpath(full_path, root_dir)
+
+            if os.path.isdir(full_path):
+                if item in EXCLUDE_DIRS or item.startswith("."):
+                    continue
+                entries.append({
+                    "name": item,
+                    "type": "folder",
+                    "path": "/" + rel_path,
+                    "children": walk_dir(full_path),
+                })
+            else:
+                entries.append({
+                    "name": item,
+                    "type": "file",
+                    "path": "/" + rel_path,
+                })
+
+        return entries
+
+    return walk_dir(root_dir)
+
+
+async def _build_remote_file_tree(
+    workspace,
+    root: str = WORKSPACE_MOUNT_PATH,
+) -> List[dict]:
+    """
+    Build a file tree by running `find` inside the Docker container.
+    Returns a nested tree structure from the flat `find` output.
+    """
+    EXCLUDE_PATTERNS = (
+        "-name .git -prune -o "
+        "-name node_modules -prune -o "
+        "-name __pycache__ -prune -o "
+        "-name .next -prune -o "
+        "-name .venv -prune -o "
+        "-name venv -prune -o "
+    )
+
+    cmd = (
+        f'find {root} {EXCLUDE_PATTERNS}'
+        f'-print 2>/dev/null | sort'
+    )
+
+    result = await asyncio.to_thread(workspace.execute_command, cmd)
+
+    raw_output = result.stdout if hasattr(result, 'stdout') else str(result)
+    lines = [l.strip() for l in raw_output.strip().split("\n") if l.strip()]
+
+    # Filter out the root itself and any empty lines
+    lines = [l for l in lines if l and l != root]
+
+    if not lines:
+        return []
+
+    # Build tree from flat paths
+    tree_root: Dict[str, Any] = {"children": {}}
+
+    for line in lines:
+        # Make path relative to root
+        if line.startswith(root):
+            rel = line[len(root):].lstrip("/")
+        else:
+            rel = line.lstrip("/")
+
+        if not rel:
+            continue
+
+        parts = rel.split("/")
+        current = tree_root
+
+        for i, part in enumerate(parts):
+            if part not in current["children"]:
+                is_last = (i == len(parts) - 1)
+                current["children"][part] = {
+                    "name": part,
+                    "children": {},
+                }
+            current = current["children"][part]
+
+    # Now determine folder vs file by checking for children,
+    # and then run `find -type d` to get definitive folder list
+    dir_cmd = f'find {root} {EXCLUDE_PATTERNS}-type d -print 2>/dev/null'
+    dir_result = await asyncio.to_thread(workspace.execute_command, dir_cmd)
+    dir_output = dir_result.stdout if hasattr(dir_result, 'stdout') else str(dir_result)
+    dir_set = set()
+    for d in dir_output.strip().split("\n"):
+        d = d.strip()
+        if d.startswith(root):
+            dir_set.add(d[len(root):].lstrip("/"))
+        elif d:
+            dir_set.add(d.lstrip("/"))
+
+    def convert(node: dict, parent_path: str = "") -> List[dict]:
+        result_list = []
+        for name, child in sorted(node["children"].items()):
+            rel_path = f"{parent_path}/{name}" if parent_path else name
+            full_path = f"{root}/{rel_path}"
+
+            if child["children"] or rel_path in dir_set:
+                result_list.append({
+                    "name": name,
+                    "type": "folder",
+                    "path": full_path,
+                    "children": convert(child, rel_path),
+                })
+            else:
+                result_list.append({
+                    "name": name,
+                    "type": "file",
+                    "path": full_path,
+                })
+        return result_list
+
+    return convert(tree_root)
 
 
 # ═══════════════════════════════════════════════════════════
